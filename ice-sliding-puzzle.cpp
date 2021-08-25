@@ -5,6 +5,7 @@
 
 #include <iostream>
 #include <random>
+#include <algorithm>
 #include <limits.h>
 #include <assert.h>
 
@@ -123,6 +124,14 @@ struct Puzzle {
     int y = random_range(h);
     return Coord(x,y);
   }
+
+  int count_obstacles() const {
+    int obstacles = 0;
+    for (Coord c : *this) {
+      if (grid[c]) obstacles++;
+    }
+    return obstacles;
+  }
 };
 
 // ----------------------------------------------------------------------------
@@ -173,19 +182,19 @@ int max_distance(Puzzle const& g) {
   return max_dist;
 }
 
-void show(Puzzle const& g) {
-  int max_dist = max_distance(g);
+void show(Puzzle const& puzzle) {
+  int max_dist = max_distance(puzzle);
   std::ostream& out = std::cout;
   const char* CLEAR = "\033[0m";
   const char* GREEN = "\033[32;1m";
   const char* BLUE = "\033[34;1m";
   const char* YELLOW = "\033[33;1m";
-  out << max_dist << std::endl;
-  for (int y=0; y<g.h; ++y) {
-    for (int x=0; x<g.w; ++x) {
+  out << puzzle.w << "×" << puzzle.h << " puzzle, " << puzzle.count_obstacles() << " obstacles, " << max_dist << " moves" << std::endl;
+  for (int y=0; y<puzzle.h; ++y) {
+    for (int x=0; x<puzzle.w; ++x) {
       Coord coord = Coord(x,y);
       int dist = pass_dists[coord];
-      if (g[coord]) {
+      if (puzzle[coord]) {
         out << YELLOW << '#' << CLEAR;
       } else if (dist >= UNREACHABLE) {
         out << '.';
@@ -399,7 +408,7 @@ void first_puzzle(Puzzle& p, int obstacles) {
   }
 }
 
-Puzzle brute_force_solve(int w, int h, int obstacles = 8, const bool verbose = false) {
+Puzzle brute_force_search(int w, int h, int obstacles = 8, const bool verbose = false) {
   Puzzle best(w,h);
   int best_score = -1;
   
@@ -431,7 +440,6 @@ Puzzle brute_force_solve(int w, int h, int obstacles = 8, const bool verbose = f
 // Relative position based puzzle
 // ----------------------------------------------------------------------------
 
-
 enum class RelativePosition {
   SAME,
   NEXT,
@@ -443,33 +451,35 @@ const int MAX_OBSTACLES = MAX_W*MAX_H;
 // A puzzle where obstacles are placed relative to each other
 // Obstacles and start location are placed from left to right
 // vertical positions are placed top to bottom, and we use a permutation to pick a vertical location
+//
+// We have num_objects-1 obstacles and 1 start location.
+// There are num_objects+1 horizontal and vertical relative positions (between walls and objects)
 struct RelativePuzzle {
-  int num_obstacles;
+  int num_objects;
   RelativePosition horizontal_pos[MAX_OBSTACLES];
   RelativePosition vertical_pos[MAX_OBSTACLES];
   int permutation[MAX_OBSTACLES];
   int start_index;
 
   // require:
-  //   * with o obstacles, have o+1 points, o+2 relative positions
+  //   * with o obstacles, have o+1 objects, o+2 relative positions
   //   * // don't overlap wall
   //     horizontal_pos[0] != SAME && horizontal_pos[o+1] != SAME
   //     vertical_pos[0] != SAME && vertical_pos[o+1] != SAME
   //   * if horizontal_pos[i] == SAME, then
-  //       vertical_pos[perm[i]] != SAME  (?)
+  //       not all j in perm[i]..perm[i+1] have vertical_pos[j] == SAME
   //       permutation[i] < permutation[i+1]
   //   * for uniqueness: permutation[0] <= n/2
   //       otherwise we could vertical flip
   //   * for uniqueness: start_index <= n/2
   //       otherwise we could horizontal flip
-  //
   
   static void to_coords(const RelativePosition* rel_pos, int n, Coord* coords, int& w) {
     int x = -1;
     for (int i=0; i<n+1; ++i) {
       if      (rel_pos[i] == RelativePosition::SAME) x += 0;
       else if (rel_pos[i] == RelativePosition::NEXT) x += 1;
-      else if (rel_pos[i] == RelativePosition::SKIP) x += 3;
+      else if (rel_pos[i] == RelativePosition::SKIP) x += 4;
       coords[i] = x;
     }
     w = coords[n];
@@ -478,12 +488,12 @@ struct RelativePuzzle {
   bool to_puzzle(Puzzle& puzzle) const {
     Coord x_coords[MAX_OBSTACLES];
     Coord y_coords[MAX_OBSTACLES];
-    to_coords(horizontal_pos, num_obstacles+1, x_coords, puzzle.w);
-    to_coords(vertical_pos, num_obstacles+1, y_coords, puzzle.h);
+    to_coords(horizontal_pos, num_objects, x_coords, puzzle.w);
+    to_coords(vertical_pos, num_objects, y_coords, puzzle.h);
     if (puzzle.w == 0 || puzzle.w > MAX_W || x_coords[0] == -1) return false;
     if (puzzle.h == 0 || puzzle.h > MAX_H || y_coords[0] == -1) return false;
     puzzle.clear();
-    for (int i=0; i<num_obstacles+1; ++i) {
+    for (int i=0; i<num_objects; ++i) {
       auto pos = Coord(x_coords[i], y_coords[permutation[i]]);
       if (i == start_index) {
         puzzle.start = pos;
@@ -495,7 +505,92 @@ struct RelativePuzzle {
   }
 };
 
+RelativePuzzle first_relative_puzzle(int obstacles) {
+  RelativePuzzle p;
+  p.num_objects = obstacles + 1;
+  p.start_index = 0;
+  for (int i = 0; i < p.num_objects+1; ++i) {
+    auto pos = i == 0 || i == p.num_objects ? RelativePosition::NEXT : RelativePosition::SAME;
+    p.horizontal_pos[i] = pos;
+    p.vertical_pos[i] = pos;
+  }
+  for (int i = 0; i < p.num_objects; ++i) {
+    p.permutation[i] = i;
+  }
+  return p;
+}
 
+bool next_relative_pos(RelativePosition& p, bool at_wall) {
+  if (p == RelativePosition::SAME) {
+    p = RelativePosition::NEXT;
+    return true;
+  } else if (p == RelativePosition::NEXT) {
+    p = RelativePosition::SKIP;
+    return true;
+  } else {
+    p = at_wall ? RelativePosition::NEXT : RelativePosition::SAME;
+    return false;
+  }
+}
+bool next_relative_puzzle(RelativePuzzle& p) {
+  // next start location
+  ++p.start_index;
+  if (p.start_index*2 < p.num_objects) return true;
+  p.start_index = 0;
+  // next permutation?
+  if (std::next_permutation(p.permutation, p.permutation + p.num_objects) && p.permutation[0]*2 <= p.num_objects) {
+    return true;
+  }
+  for (int i = 0; i < p.num_objects; ++i) {
+    p.permutation[i] = i;
+  }
+  // next vertical/horizontal pos
+  for (int i = 0; i < p.num_objects+1; ++i) {
+    if (next_relative_pos(p.horizontal_pos[i], i == 0 || i == p.num_objects)) return true;
+    if (next_relative_pos(p.vertical_pos[i], i == 0 || i == p.num_objects)) return true;
+  }
+  return false;
+}
+
+std::ostream& operator << (std::ostream& out, RelativePosition pos) {
+  return out << (pos == RelativePosition::SAME ? '0' : pos == RelativePosition::NEXT ? '1' : '2');
+}
+std::ostream& operator << (std::ostream& out, RelativePuzzle const& rp) {
+  out << "RP: " << rp.num_objects << " start " << rp.start_index << std::endl;
+  out << "horz: "; for (int i=0; i<rp.num_objects+1; ++i) {out << rp.horizontal_pos[i];} out << std::endl;
+  out << "vert: "; for (int i=0; i<rp.num_objects+1; ++i) {out << rp.vertical_pos[i];} out << std::endl;
+  out << "perm: "; for (int i=0; i<rp.num_objects; ++i) {out << rp.permutation[i] << " ";} out << std::endl;
+  return out;
+}
+
+Puzzle relative_puzzle_search(int obstacles = 8, const int verbose = 2) {
+  Puzzle best(1,1);
+  int best_score = -1;
+  
+  RelativePuzzle rp = first_relative_puzzle(obstacles);
+  Puzzle puzzle(1,1);
+  long long count = 0;
+  while (true) {
+    count++;
+    rp.to_puzzle(puzzle);
+    if (verbose >= 3) {
+      std::cout << rp;
+    }
+    if (verbose >= 4) show(puzzle);
+    int score = max_distance(puzzle);
+    if (score > best_score) {
+      best_score = score;
+      best = puzzle;
+      if (verbose) {
+        show(best);
+        if (verbose >= 2) std::cout << rp;
+      }
+    }
+    if (!next_relative_puzzle(rp)) break;
+  }
+  if (verbose) std::cout << count << " puzzles tried" << std::endl;
+  return best;
+}
 
 // ----------------------------------------------------------------------------
 // Main
@@ -527,9 +622,14 @@ int main() {
   const bool brute_force = false;
   const bool verbose = true;
   
+  if (true) {
+    relative_puzzle_search(6);
+    return EXIT_SUCCESS;
+  }
+  
   for (int o = min_obstacle; o <= max_obstacle; ++o) {
     std::cout << "=============" << std::endl;
-    Puzzle p = brute_force ? brute_force_solve(w,h,o,verbose)
+    Puzzle p = brute_force ? brute_force_search(w,h,o,verbose)
                            : greedy_optimize_from_random(w,h,o,verbose);
     int score = max_distance(p);
     show(p);
