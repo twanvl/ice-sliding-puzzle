@@ -1,5 +1,6 @@
 // ----------------------------------------------------------------------------
 // Ice sliding puzzle maker
+// Search for puzzles that need the most moves to solve.
 // ----------------------------------------------------------------------------
 
 #include <iostream>
