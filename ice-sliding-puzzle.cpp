@@ -9,10 +9,8 @@
 #include <limits.h>
 #include <assert.h>
 
-//const int MAX_W = 16;
-//const int MAX_H = 16;
-const int MAX_W = 32;
-const int MAX_H = 32;
+//const int MAX_W = 16, MAX_H = 16;
+const int MAX_W = 32, MAX_H = 32;
 const int UNREACHABLE = MAX_W * MAX_H + 1;
 
 std::default_random_engine rng;
@@ -228,13 +226,23 @@ void show(Puzzle const& puzzle) {
 // ----------------------------------------------------------------------------
 
 template <typename F>
-void for_single_changes(Puzzle const& puzzle, bool swaps, F fun) {
+void for_single_changes(Puzzle const& puzzle, bool swaps, bool reachable_only, F fun) {
+  // find out which cells are reachable
+  int reachable[MAX_W*MAX_H];
+  if (reachable_only) {
+    max_distance(puzzle);
+    std::copy(pass_dists, pass_dists+MAX_W*MAX_H, reachable);
+  }
   // for each obstacle, consider moving it to any location, and call fun
   Puzzle puzzle_new = puzzle;
   for (Coord obstacle : puzzle) {
     if (puzzle[obstacle]) {
       puzzle_new[obstacle] = false;
       for (Coord alt : puzzle) {
+        if (reachable_only && reachable[alt] == UNREACHABLE) {
+          // optimization: no path reaches this cell, so placing an obstacle here is useless
+          continue;
+        }
         if (!puzzle[alt] && alt != puzzle.start) {
           puzzle_new[alt] = true;
           fun(puzzle_new);
@@ -292,6 +300,7 @@ Puzzle greedy_optimize(Puzzle const& initial, bool verbose = false) {
   const bool accept_same_score = false;
   const int BUDGET = accept_same_score ? 10 : 1;
   const bool USE_SWAPS = false;
+  const bool REACHABLE_ONLY = true;
   int budget = BUDGET;
   
   while (budget > 0) {
@@ -299,7 +308,7 @@ Puzzle greedy_optimize(Puzzle const& initial, bool verbose = false) {
     Puzzle cur = best;
     int num_equiv = 1; // number of puzzles with the same score as best
     bool swaps = USE_SWAPS && (budget == BUDGET || budget == 0);
-    for_single_changes(cur, swaps, [&](Puzzle const& p) {
+    for_single_changes(cur, swaps, REACHABLE_ONLY, [&](Puzzle const& p) {
       int score = max_distance(p);
       if (score > best_score) {
         best = p;
@@ -322,7 +331,7 @@ Puzzle greedy_optimize(Puzzle const& initial, bool verbose = false) {
 }
 
 Puzzle greedy_optimize_from_random(int w, int h, int obstacles = 8, const bool verbose = false) {
-  const int RUNS = 10000;
+  const int RUNS = 1000;
   Puzzle best(w,h);
   int best_score = 0;
   
