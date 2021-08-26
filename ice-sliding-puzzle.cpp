@@ -8,10 +8,10 @@
 #include <algorithm>
 #include <limits.h>
 #include <assert.h>
+#include <stdint.h>
 
 //const int MAX_W = 16, MAX_H = 16;
 const int MAX_W = 32, MAX_H = 32;
-const int UNREACHABLE = MAX_W * MAX_H + 1;
 #define SENTINELS 1
 
 std::default_random_engine rng;
@@ -55,7 +55,7 @@ struct Puzzle {
 private:
   // We store the grid with sentinel obstacles values at the walls.
   // The actual obstacles are located at grid[Coord(x,y+1)]
-  // this means that the max puzzle size is MAX_W-1 by MAX_H!
+  // this means that the max puzzle size is MAX_W-1 by MAX_H
   bool grid[MAX_W*(SENTINELS ? MAX_H+2 : MAX_H)];
   void init_sentinels() {
     if (SENTINELS) {
@@ -164,13 +164,16 @@ public:
 // Distance calculation / solver
 // ----------------------------------------------------------------------------
 
-int dists[MAX_W*MAX_H];
-int pass_dists[MAX_W*MAX_H];
+using Distance = uint8_t;
+const Distance UNREACHABLE = 254;
+Distance dists[MAX_W*MAX_H];
+Distance pass_dists[MAX_W*MAX_H];
+
 // Returns maximum distance that can be traveled to reach any point
 int max_distance(Puzzle const& puzzle) {
   Coord queue[MAX_W*MAX_H];
   int queue_start = 0, queue_end = 0;
-  int max_dist = 0;
+  Distance max_dist = 0;
   
   std::fill_n(dists, MAX_W*puzzle.h, UNREACHABLE);
   std::fill_n(pass_dists, MAX_W*puzzle.h, UNREACHABLE);
@@ -180,35 +183,46 @@ int max_distance(Puzzle const& puzzle) {
   
   while (queue_start < queue_end) {
     Coord pos = queue[queue_start++];
-    const int dist = dists[pos];
-    // all four movement directions
-    const int deltas[] = {-1,1, -MAX_W,MAX_W};
-    #if !SENTINELS
-      // with sentinels we don't need bounds checking anymore
-      const int col = pos.col(), row = pos.row()*MAX_W;
-      const Coord bounds[] = {row-1, row+puzzle.w, (-1)*MAX_W + col, puzzle.h*MAX_W + col};
-    #endif
-    // move in that direction
-    for (int i=0; i<4; ++i) {
+    const Distance dist = dists[pos];
+    const Distance next_dist = dist + 1;
+    // check move in all four directions
+    auto check_in_direction = [&](int delta
+      #if !SENTINELS
+        , int bound
+      #endif
+    ) {
       Coord p = pos;
       while (true) {
         // is next point free?
-        Coord p2 = p + deltas[i];
+        Coord p2 = p + delta;
         #if !SENTINELS
-          if (p2 == bounds[i]) break;
+          // with sentinels we don't need bounds checking anymore
+          if (p2 == bound) break;
         #endif
         if (puzzle[p2]) break;
-        if (pass_dists[p2] > dist + 1) {
-          pass_dists[p2] = dist + 1;
-          max_dist = dist + 1; // we could stop here
+        if (pass_dists[p2] > next_dist) {
+          pass_dists[p2] = next_dist;
+          max_dist = next_dist; // we could stop here
         }
         p = p2;
       }
-      if (dists[p] > dist + 1) {
-        dists[p] = dist + 1;
+      if (dists[p] > next_dist) {
+        dists[p] = next_dist;
         queue[queue_end++] = p;
       }
-    }
+    };
+    #if SENTINELS
+      check_in_direction(-1);
+      check_in_direction(1);
+      check_in_direction(-MAX_W);
+      check_in_direction(MAX_W);
+    #else
+      const int col = pos.col(), row = pos.row()*MAX_W;
+      check_in_direction(-1, row-1);
+      check_in_direction(+1, row+puzzle.w);
+      check_in_direction(-MAX_W, (-1)*MAX_W + col);
+      check_in_direction(+MAX_W, puzzle.h*MAX_W + col);
+    #endif
   }
   return max_dist;
 }
