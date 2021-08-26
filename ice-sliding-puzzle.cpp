@@ -16,9 +16,13 @@ const int MAX_H = 32;
 const int UNREACHABLE = MAX_W * MAX_H + 1;
 
 std::default_random_engine rng;
+std::uniform_real_distribution<double> uniform(0.0, 1.0);
 int random_range(int n) {
   std::uniform_int_distribution<int> distribution(0,n-1);
   return distribution(rng);
+}
+double random_double() {
+  return uniform(rng);
 }
 
 // ----------------------------------------------------------------------------
@@ -123,6 +127,12 @@ struct Puzzle {
     int x = random_range(w);
     int y = random_range(h);
     return Coord(x,y);
+  }
+  Coord random_empty_coord() const {
+    while (true) {
+      Coord coord = random_coord();
+      if (!grid[coord] && coord != start) return coord;
+    }
   }
 
   int count_obstacles() const {
@@ -322,9 +332,7 @@ Puzzle greedy_optimize_from_random(int w, int h, int obstacles = 8, const bool v
     for (int j=0; j < obstacles; ++j) {
       puzzle[puzzle.random_coord()] = true;
     }
-    do {
-      puzzle.start = puzzle.random_coord();
-    } while (puzzle[puzzle.start]);
+    puzzle.start = puzzle.random_empty_coord();
     // optimize
     puzzle = greedy_optimize(puzzle);
     int score = max_distance(puzzle);
@@ -332,6 +340,88 @@ Puzzle greedy_optimize_from_random(int w, int h, int obstacles = 8, const bool v
       best_score = score;
       best = puzzle;
       if (verbose) show(best);
+    }
+  }
+  return best;
+}
+
+// ----------------------------------------------------------------------------
+// Simulated annealing
+// ----------------------------------------------------------------------------
+
+// Find and remove the i-th obstacle
+void remove_obstacle(Puzzle& puzzle, int i) {
+  for (Coord pos : puzzle) {
+    if (puzzle[pos]) {
+      if (i == 0) {
+        puzzle[pos] = false;
+        return;
+      }
+      i--;
+    }
+  }
+}
+
+void random_change(Puzzle& puzzle, int num_obstacles) {
+  // move an obstacle or a the start location
+  int to_remove = random_range(num_obstacles+1);
+  if (to_remove == num_obstacles) {
+    puzzle.start = puzzle.random_empty_coord();
+  } else {
+    remove_obstacle(puzzle, to_remove);
+    puzzle[puzzle.random_empty_coord()] = true;
+  }
+}
+
+Puzzle make_random_puzzle(int w, int h, int obstacles) {
+  Puzzle puzzle(w,h);
+  puzzle.start = puzzle.random_coord();
+  for (int i = 0; i < obstacles; ++i) {
+    puzzle[puzzle.random_empty_coord()] = true;
+  }
+  return puzzle;
+}
+
+Puzzle simulated_annealing_search(int w, int h, int obstacles, int verbose=0) {
+  Puzzle best(w,h);
+  int best_score = 0;
+
+  const int RUNS = 10;
+  const int STEP_PER_TEMPERATURE = 100 * obstacles;
+  const double TEMPERATURE_INITIAL = 0.1;
+  const double TEMPERATURE_FINAL = 1e-5;
+  const double TEMPERATURE_STEP = 1 / 1.003;
+  
+  for (int i=0; i < RUNS; ++i) {
+    Puzzle puzzle = make_random_puzzle(w,h,obstacles);
+    int score = max_distance(puzzle);
+    for (double temp = TEMPERATURE_INITIAL; temp >= TEMPERATURE_FINAL; temp *= TEMPERATURE_STEP) {
+      int n_accept = 0, n_reject = 0;
+      for (int i=0; i < STEP_PER_TEMPERATURE; ++i) {
+        // change
+        Puzzle prev_puzzle = puzzle;
+        int prev_score = score;
+        random_change(puzzle, obstacles);
+        // compare with best
+        score = max_distance(puzzle);
+        if (score > best_score) {
+          best_score = score;
+          best = puzzle;
+          if (verbose) show(best);
+        }
+        // compare with previous
+        bool accept = random_double() < exp(temp * (score - prev_score));
+        if (!accept) {
+          n_accept++;
+          score = prev_score;
+          puzzle = prev_puzzle;
+        } else {
+          n_reject++;
+        }
+      }
+      if (verbose >= 2) {
+        std::cout << "at " << temp << "  " << (double)n_accept/n_reject << " accepted" << std::endl;
+      }
     }
   }
   return best;
@@ -617,20 +707,25 @@ Puzzle test_puzzle2({
 int main() {
   //const int w = 7, h = 6;
   //const int w = 8, h = 8;
-  const int w = 32, h = 32;
-  const int min_obstacle = 8, max_obstacle = 15;
+  const int w = 16, h = 16;
+  const int min_obstacle = 1, max_obstacle = 5;
   const bool brute_force = false;
+  const bool simulated_annealing = false;
   const bool verbose = true;
   
-  if (true) {
+  if (false) {
     relative_puzzle_search(6);
     return EXIT_SUCCESS;
   }
   
   for (int o = min_obstacle; o <= max_obstacle; ++o) {
     std::cout << "=============" << std::endl;
-    Puzzle p = brute_force ? brute_force_search(w,h,o,verbose)
-                           : greedy_optimize_from_random(w,h,o,verbose);
+    Puzzle p =
+      brute_force ?
+        brute_force_search(w,h,o,verbose) :
+      simulated_annealing ?
+        simulated_annealing_search(w,h,o,verbose) :
+        greedy_optimize_from_random(w,h,o,verbose);
     int score = max_distance(p);
     show(p);
     std::cout << "With " << o << " obstacles: " << score << " steps" << std::endl;
