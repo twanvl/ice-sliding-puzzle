@@ -12,6 +12,7 @@
 //const int MAX_W = 16, MAX_H = 16;
 const int MAX_W = 32, MAX_H = 32;
 const int UNREACHABLE = MAX_W * MAX_H + 1;
+#define SENTINELS 1
 
 std::default_random_engine rng;
 std::uniform_real_distribution<double> uniform(0.0, 1.0);
@@ -51,7 +52,22 @@ public:
 // A puzzle is a grid of obstacles, with a start point.
 // We don't need to store the end point, because we calculate the distance to all points.
 struct Puzzle {
-  bool grid[MAX_W*MAX_H];
+private:
+  // We store the grid with sentinel obstacles values at the walls.
+  // The actual obstacles are located at grid[Coord(x,y+1)]
+  // this means that the max puzzle size is MAX_W-1 by MAX_H!
+  bool grid[MAX_W*(SENTINELS ? MAX_H+2 : MAX_H)];
+  void init_sentinels() {
+    if (SENTINELS) {
+      std::fill_n(&grid[0], MAX_W, true);
+      std::fill_n(&grid[MAX_W*(h+1)], MAX_W, true);
+      for (int y=0; y<h; ++y) {
+        grid[(y+1)*MAX_W-1] = true;
+        grid[(y+1)*MAX_W+w] = true;
+      }
+    }
+  }
+public:
   int w,h;
   Coord start = 0;
 
@@ -88,13 +104,14 @@ struct Puzzle {
   }
   
   inline bool operator [] (Coord pos) const {
-    return grid[pos];
+    return grid[pos + (SENTINELS ? MAX_W : 0)];
   }
   inline bool& operator [] (Coord pos) {
-    return grid[pos];
+    return grid[pos + (SENTINELS ? MAX_W : 0)];
   }
   void clear() {
-    std::fill_n(grid, MAX_W*MAX_H, false);
+    std::fill_n(grid + (SENTINELS ? MAX_W : 0), MAX_W*h, false);
+    init_sentinels();
   }
   
   Puzzle(int w, int h) : w(w), h(h) {
@@ -113,12 +130,13 @@ struct Puzzle {
       for (int x=0; x<w; ++x) {
         char c = row[x];
         Coord pos = Coord(x,y);
-        grid[pos] = (c == '*' || c == '#');
+        (*this)[pos] = (c == '*' || c == '#');
         if (c == '0' || c == 's' || c == 'S') start = pos;
       }
       h++;
       y++;
     }
+    init_sentinels();
   }
   
   Coord random_coord() const {
@@ -129,14 +147,14 @@ struct Puzzle {
   Coord random_empty_coord() const {
     while (true) {
       Coord coord = random_coord();
-      if (!grid[coord] && coord != start) return coord;
+      if (!(*this)[coord] && coord != start) return coord;
     }
   }
 
   int count_obstacles() const {
     int obstacles = 0;
     for (Coord c : *this) {
-      if (grid[c]) obstacles++;
+      if ((*this)[c]) obstacles++;
     }
     return obstacles;
   }
@@ -149,32 +167,37 @@ struct Puzzle {
 int dists[MAX_W*MAX_H];
 int pass_dists[MAX_W*MAX_H];
 // Returns maximum distance that can be traveled to reach any point
-int max_distance(Puzzle const& g) {
+int max_distance(Puzzle const& puzzle) {
   Coord queue[MAX_W*MAX_H];
   int queue_start = 0, queue_end = 0;
   int max_dist = 0;
   
-  std::fill_n(dists, MAX_W*MAX_H, UNREACHABLE);
-  std::fill_n(pass_dists, MAX_W*MAX_H, UNREACHABLE);
+  std::fill_n(dists, MAX_W*puzzle.h, UNREACHABLE);
+  std::fill_n(pass_dists, MAX_W*puzzle.h, UNREACHABLE);
   
-  queue[queue_end++] = g.start;
-  dists[g.start] = pass_dists[g.start] = 0;
+  queue[queue_end++] = puzzle.start;
+  dists[puzzle.start] = pass_dists[puzzle.start] = 0;
   
   while (queue_start < queue_end) {
     Coord pos = queue[queue_start++];
-    int dist = dists[pos];
-    int col = pos.col(), row = pos.row()*MAX_W;
+    const int dist = dists[pos];
     // all four movement directions
-    int ds[] = {-1,1, -MAX_W,MAX_W};
-    Coord bounds[] = {row-1, row+g.w, (-1)*MAX_W + col, g.h*MAX_W + col};
+    const int deltas[] = {-1,1, -MAX_W,MAX_W};
+    #if !SENTINELS
+      // with sentinels we don't need bounds checking anymore
+      const int col = pos.col(), row = pos.row()*MAX_W;
+      const Coord bounds[] = {row-1, row+puzzle.w, (-1)*MAX_W + col, puzzle.h*MAX_W + col};
+    #endif
     // move in that direction
     for (int i=0; i<4; ++i) {
-      int p = pos;
+      Coord p = pos;
       while (true) {
         // is next point free?
-        int p2 = p + ds[i];
-        if (p2 == bounds[i]) break;
-        if (g.grid[p2]) break;
+        Coord p2 = p + deltas[i];
+        #if !SENTINELS
+          if (p2 == bounds[i]) break;
+        #endif
+        if (puzzle[p2]) break;
         if (pass_dists[p2] > dist + 1) {
           pass_dists[p2] = dist + 1;
           max_dist = dist + 1; // we could stop here
@@ -717,7 +740,7 @@ int main() {
   //const int w = 7, h = 6;
   //const int w = 8, h = 8;
   const int w = 16, h = 16;
-  const int min_obstacle = 1, max_obstacle = 5;
+  const int min_obstacle = 2, max_obstacle = 5;
   const bool brute_force = false;
   const bool simulated_annealing = false;
   const bool verbose = true;
