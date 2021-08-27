@@ -168,9 +168,10 @@ using Distance = uint8_t;
 const Distance UNREACHABLE = 254;
 Distance dists[MAX_W*MAX_H];
 Distance pass_dists[MAX_W*MAX_H];
+Coord come_from[MAX_W*MAX_H];
 
 // Returns maximum distance that can be traveled to reach any point
-int max_distance(Puzzle const& puzzle) {
+int max_distance(Puzzle const& puzzle, const bool track_come_from = false) {
   Coord queue[MAX_W*MAX_H];
   int queue_start = 0, queue_end = 0;
   Distance max_dist = 0;
@@ -202,6 +203,7 @@ int max_distance(Puzzle const& puzzle) {
         if (puzzle[p2]) break;
         if (pass_dists[p2] > next_dist) {
           pass_dists[p2] = next_dist;
+          if (track_come_from) come_from[p2] = pos;
           max_dist = next_dist; // we could stop here
         }
         p = p2;
@@ -227,31 +229,83 @@ int max_distance(Puzzle const& puzzle) {
   return max_dist;
 }
 
-void show(Puzzle const& puzzle) {
-  int max_dist = max_distance(puzzle);
+// ----------------------------------------------------------------------------
+// Visualization
+// ----------------------------------------------------------------------------
+
+enum class Style {
+  PUZZLE_ONLY,
+  DISTANCES,
+  BOX_DRAWING
+};
+
+Coord find_goal(Puzzle const& puzzle, int distance) {
+  // requires that max_distance() has been called to fill pass_dists
+  for (Coord pos : puzzle) {
+    if (pass_dists[pos] == distance) return pos;
+  }
+  return puzzle.start;
+}
+
+void show_path(Puzzle const& puzzle, Coord goal, const char** path) {
+  const char* clear = ".";
+  std::fill_n(path, MAX_W*MAX_H, clear);
+  path[goal] = "E";
+  Coord pos = goal;
+  while (pos != puzzle.start) {
+    Coord from = come_from[pos];
+    if (from == pos) return; // shouldn't happen
+    bool horizontal = from.row() == pos.row();
+    int dir = horizontal ? (from < pos ? -1 : 1) : (from < pos ? -MAX_W : MAX_W);
+    while (pos != from) {
+      pos = pos + dir;
+      if (path[pos] != clear) {
+        path[pos] = "┼";
+      } else {
+        path[pos] = horizontal ? "─" : "│";
+      }
+    }
+    Coord next_from = come_from[from];
+    if (dir == -1)     path[pos] = next_from < pos ? "└" : "┌";
+    if (dir ==  1)     path[pos] = next_from < pos ? "┘" : "┐";
+    if (dir == -MAX_W) path[pos] = next_from < pos ? "┐" : "┌";
+    if (dir ==  MAX_W) path[pos] = next_from < pos ? "┘" : "└";
+  }
+}
+
+void show(Puzzle const& puzzle, Style style = Style::BOX_DRAWING, bool ansi_color = true) {
   std::ostream& out = std::cout;
-  const char* CLEAR = "\033[0m";
-  const char* GREEN = "\033[32;1m";
-  const char* BLUE = "\033[34;1m";
-  const char* YELLOW = "\033[33;1m";
+  const char* CLEAR = ansi_color ? "\033[0m" : "";
+  const char* GREEN = ansi_color ? "\033[32;1m" : "";
+  const char* BLUE = ansi_color ? "\033[34;1m" : "";
+  const char* YELLOW = ansi_color ? "\033[33;1m" : "";
+  int max_dist = max_distance(puzzle, true);
+  Coord goal = find_goal(puzzle, max_dist);
+  const char* box_drawing[MAX_W*MAX_H];
+  show_path(puzzle, goal, box_drawing);
   out << puzzle.w << "×" << puzzle.h << " puzzle, " << puzzle.count_obstacles() << " obstacles, " << max_dist << " moves" << std::endl;
   for (int y=0; y<puzzle.h; ++y) {
     for (int x=0; x<puzzle.w; ++x) {
-      Coord coord = Coord(x,y);
-      int dist = pass_dists[coord];
-      if (puzzle[coord]) {
-        out << YELLOW << '#' << CLEAR;
-      } else if (dist >= UNREACHABLE) {
+      Coord pos = Coord(x,y);
+      int dist = pass_dists[pos];
+      if (puzzle[pos]) {
+        out << YELLOW << (style == Style::BOX_DRAWING ? "■" : "#") << CLEAR;
+      } else if (dist == 0) {
+        out << GREEN << "S" << CLEAR;
+      } else if (pos == goal) {
+        out << BLUE << "E" << CLEAR;
+      } else if (style == Style::BOX_DRAWING) {
+        out << box_drawing[pos];
+      } else if (dist >= UNREACHABLE || style == Style::PUZZLE_ONLY) {
         out << '.';
       } else {
-        if (dist == 0) out << GREEN;
         if (dist == max_dist) out << BLUE;
         if (dist < 10) {
           out << dist;
         } else {
           out << (char)(dist - 10 + 'a');
         }
-        if (dist == 0 || dist == max_dist) out << CLEAR;
+        if (dist == max_dist) out << CLEAR;
       }
     }
     out << std::endl;
@@ -368,7 +422,7 @@ Puzzle greedy_optimize(Puzzle const& initial, bool verbose = false) {
 }
 
 Puzzle greedy_optimize_from_random(int w, int h, int obstacles = 8, const bool verbose = false) {
-  const int RUNS = 1000;
+  const int RUNS = 10000;
   Puzzle best(w,h);
   int best_score = 0;
   
@@ -729,6 +783,13 @@ Puzzle relative_puzzle_search(int obstacles = 8, const int verbose = 2) {
 }
 
 // ----------------------------------------------------------------------------
+// Image output
+// ----------------------------------------------------------------------------
+
+void to_image() {
+}
+
+// ----------------------------------------------------------------------------
 // Main
 // ----------------------------------------------------------------------------
 
@@ -751,10 +812,10 @@ Puzzle test_puzzle2({
   });
 
 int main() {
-  //const int w = 7, h = 6;
+  const int w = 7, h = 6;
   //const int w = 8, h = 8;
-  const int w = 16, h = 16;
-  const int min_obstacle = 2, max_obstacle = 5;
+  //const int w = 16, h = 16;
+  const int min_obstacle = 2, max_obstacle = 8;
   const bool brute_force = false;
   const bool simulated_annealing = false;
   const bool verbose = true;
