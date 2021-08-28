@@ -13,6 +13,7 @@
 //const int MAX_W = 16, MAX_H = 16;
 const int MAX_W = 32, MAX_H = 32;
 #define SENTINELS 1
+#define DROP_OFF_EDGES 1
 
 std::default_random_engine rng;
 std::uniform_real_distribution<double> uniform(0.0, 1.0);
@@ -188,7 +189,7 @@ int max_distance(Puzzle const& puzzle, const bool track_come_from = false) {
     const Distance next_dist = dist + 1;
     // check move in all four directions
     auto check_in_direction = [&](int delta
-      #if !SENTINELS
+      #if !SENTINELS || DROP_OFF_EDGES
         , int bound
       #endif
     ) {
@@ -196,7 +197,12 @@ int max_distance(Puzzle const& puzzle, const bool track_come_from = false) {
       while (true) {
         // is next point free?
         Coord p2 = p + delta;
-        #if !SENTINELS
+        #if DROP_OFF_EDGES
+          if (p2 == bound) {
+            // can't stop at the edge
+            return;
+          }
+        #elif !SENTINELS
           // with sentinels we don't need bounds checking anymore
           if (p2 == bound) break;
         #endif
@@ -213,7 +219,7 @@ int max_distance(Puzzle const& puzzle, const bool track_come_from = false) {
         queue[queue_end++] = p;
       }
     };
-    #if SENTINELS
+    #if SENTINELS && !DROP_OFF_EDGES
       check_in_direction(-1);
       check_in_direction(1);
       check_in_direction(-MAX_W);
