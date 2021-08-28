@@ -212,3 +212,54 @@ I am not sure if the following are optimal:
             │ ││      │││ │
     ┌───────┼─┼┼──────┼┼┘ │
     └───────┘■└┘  ■   └┘■ S
+
+Bounds
+-------
+
+When not hitting walls, we can give some bounds on the possible number of moves.
+
+*Upper bound:*
+We can make a new move after hitting an obstacle. Each obstacle has 4 sides, so with `o` obstacles, an upper bound on the number of moves is `4o+1`.
+
+*Lower bound:*
+The following construction gives a lower bound on the number of moves
+
+    S─┐■
+      │┌─────┐■
+      ││     │┌─────┐■
+      ││     ││     │┌─────┐■
+      ││     ││     ││     │┌────E
+      ││     ││     ││     ││
+      ││     ││     ││     ││
+      ││     ││     ││     └┼────┐■
+      ││     ││     └┼────┐■└────┼┐
+      ││     └┼────┐■└────┼┐     ││
+      └┼────┐■└────┼┐     ││     ││
+      ■└────┼┐     ││     ││     ││
+            ││     ││     ││     ││
+            ││     ││     ││     └┼────┐■
+            ││     ││     └┼────┐■└────┼┐
+            ││     └┼────┐■└────┼┐     ││
+            └┼────┐■└────┼┐     ││     ││
+            ■└────┼┐     ││     ││     ││
+                  ││     ││     ││     ││
+                  ││     ││     ││     └┼────┐■
+                  ││     ││     └┼────┐■└────┼┐
+                  ││     └┼────┐■└────┼┐     ││
+                  └┼────┐■└────┼┐     ││     ││
+                  ■└────┼┐     ││     ││     ││
+                        ││     ││     ││     ││
+                        ││     ││     ││     └┼────┐■
+                        ││     ││     └┼────┐■└────┘
+                        ││     └┼────┐■└────┘      ■
+                        └┼────┐■└────┘      ■
+                        ■└────┘      ■
+                              ■
+                     
+
+With a width of `w` and height `h` (displayed here is `w=4`, `h=4`), we have
+
+    w + (w+1)*h + w obstacles
+    1 + w*2 + w*h*4 moves
+
+Taking `h=w`, we get `o = w^2 + 3w` obstacles and `m = 4*w^2 + 2*w + 1 = 4*o - 10*w + 1`. And since `w < sqrt(o)` this gives the lower bound `m >= 4*o - 10*sqrt(o) + 1`.
