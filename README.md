@@ -83,6 +83,7 @@ With a 6 by 7 grid, the best puzzles are
     ││└┐■E│
     └┘■└──┘
 </td></tr></table>
+These are proven optimal by brute-force search.
 
 With a sufficiently large grid, the best puzzles are:
 
@@ -146,6 +147,8 @@ With a sufficiently large grid, the best puzzles are:
     ┌┼┘          │        │
     └┘■          └────────┘
 
+I am not sure if the following are optimal:
+
     With 7 obstacles: 22 moves
     ┌┐     ■S────┐■┌──────┐
     └┼─────┐■┌───┼┐│      │
@@ -183,3 +186,29 @@ With a sufficiently large grid, the best puzzles are:
     ││  ││ │  │└─────────┐■
     │└──┼┼─┼──┘■┌────────┼┐
     S■  └┘■└────┘   ■    └┘
+
+    With 9 obstacles: 28 moves
+    ┌─────┐■┌───S    ■   ┌┐
+    │     │┌┼──┐■┌───────┼┘
+    │     │││  │┌┼───────┘■
+    └─────┼┼┼──┼┼┼────────┐
+          │││  E││        │
+          │││   ││        │
+    ■┌────┘││   ││        │
+    ┌┼───┐■└┼───┼┘        │
+    ││   │┌─┼───┘■        │
+    ││   ││ │             │
+    └┘ ■ └┘■└─────────────┘
+
+    With 10 obstacles: 30 moves
+    ┌┐    ■  ┌────────┐■┌─┐
+    ││    ┌──┘■┌──────┼┐│ │
+    └┼────┘■┌─┐│      │││ │
+    ■│ E───┐│ ││      │││ │
+     │     ││ ││      │││ │
+    ┌┼─────┼┘ ││      │││ │
+    └┼─────┘■ ││      │││ │
+    ■└──────┐ ││      │││ │
+            │ ││      │││ │
+    ┌───────┼─┼┼──────┼┼┘ │
+    └───────┘■└┘  ■   └┘■ S
