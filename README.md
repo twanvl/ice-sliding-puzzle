@@ -255,7 +255,6 @@ The following construction gives a lower bound on the number of moves
                         └┼────┐■└────┘      ■
                         ■└────┘      ■
                               ■
-                     
 
 With a width of `w` and height `h` (displayed here is `w=4`, `h=4`), we have
 

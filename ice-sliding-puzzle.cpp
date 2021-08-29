@@ -6,14 +6,13 @@
 #include <iostream>
 #include <random>
 #include <algorithm>
-#include <limits.h>
+#include <limits>
 #include <assert.h>
 #include <stdint.h>
 
-//const int MAX_W = 16, MAX_H = 16;
-const int MAX_W = 32, MAX_H = 32;
-#define SENTINELS 1
-#define DROP_OFF_EDGES 1
+using Distance = uint8_t;
+const int GLOBAL_BUFFER_SIZE = 64*64;
+const bool USE_SENTINEL_OPTIMIZATION = true;
 
 std::default_random_engine rng;
 std::uniform_real_distribution<double> uniform(0.0, 1.0);
@@ -26,25 +25,54 @@ double random_double() {
 }
 
 // ----------------------------------------------------------------------------
+// Parameters
+// ----------------------------------------------------------------------------
+
+// We pass parameters via template arguments, so the compiler can optimize stuff for us.
+template <int MAX_W_, int MAX_H_, bool EDGES_ARE_WALLS_ = true>
+struct Params {
+  static const bool EDGES_ARE_WALLS = EDGES_ARE_WALLS_;
+  static const bool SENTINELS = USE_SENTINEL_OPTIMIZATION && EDGES_ARE_WALLS; // can we use sentinels as an optimization?
+  static const int MAX_W = SENTINELS ? MAX_W_ - 1 : MAX_W_;
+  static const int MAX_H = MAX_H_;
+  static const int ROW_STRIDE = MAX_W_;
+  static const int BUFFER_SIZE = ROW_STRIDE * MAX_H; // size needed for buffers (that don't store sentinels)
+};
+
+// ----------------------------------------------------------------------------
 // Puzzles + solver
 // ----------------------------------------------------------------------------
 
 // We encode coordinates as x + y * MAX_W
+template <typename Params>
 struct Coord {
 private:
   int pos;
 public:
   inline Coord() {}
   inline constexpr Coord(int pos) : pos(pos) {}
-  inline constexpr Coord(int x, int y) : pos(x + y*MAX_W) {}
-  inline constexpr operator int() const { return pos; }
-  inline constexpr int row() const { return (pos / MAX_W); }
-  inline constexpr int col() const { return pos % MAX_W; }
+  inline constexpr Coord(int x, int y) : pos(x + y*Params::ROW_STRIDE) {}
+  inline constexpr operator int() const {
+    return pos;
+  }
+
+  inline constexpr int row() const {
+    return (pos / Params::ROW_STRIDE);
+  }
+  inline constexpr int col() const {
+    return pos % Params::ROW_STRIDE;
+  }
+  inline constexpr int with_row(int row) const {
+    return Coord(col(), row);
+  }
+  inline constexpr int with_col(int col) const {
+    return Coord(col, row());
+  }
   
   inline constexpr Coord next(int w) {
     int next = pos + 1;
-    if (next % MAX_W == w) {
-      next = next - w + MAX_W;
+    if (next % Params::ROW_STRIDE == w) {
+      next = next - w + Params::ROW_STRIDE;
     }
     return next;
   }
@@ -52,23 +80,25 @@ public:
 
 // A puzzle is a grid of obstacles, with a start point.
 // We don't need to store the end point, because we calculate the distance to all points.
+template <typename Params>
 struct Puzzle {
 private:
   // We store the grid with sentinel obstacles values at the walls.
   // The actual obstacles are located at grid[Coord(x,y+1)]
   // this means that the max puzzle size is MAX_W-1 by MAX_H
-  bool grid[MAX_W*(SENTINELS ? MAX_H+2 : MAX_H)];
+  bool grid[Params::ROW_STRIDE * (Params::SENTINELS ? Params::MAX_H+2 : Params::MAX_H)];
   void init_sentinels() {
-    if (SENTINELS) {
-      std::fill_n(&grid[0], MAX_W, true);
-      std::fill_n(&grid[MAX_W*(h+1)], MAX_W, true);
+    if (Params::SENTINELS) {
+      std::fill_n(&grid[0], Params::ROW_STRIDE, true);
+      std::fill_n(&grid[(h+1)*Params::ROW_STRIDE], Params::ROW_STRIDE, true);
       for (int y=0; y<h; ++y) {
-        grid[(y+1)*MAX_W-1] = true;
-        grid[(y+1)*MAX_W+w] = true;
+        grid[(y+1)*Params::ROW_STRIDE-1] = true;
+        grid[(y+1)*Params::ROW_STRIDE+w] = true;
       }
     }
   }
 public:
+  using Coord = ::Coord<Params>;
   int w,h;
   Coord start = 0;
 
@@ -81,8 +111,8 @@ public:
     
     void operator ++() {
       ++pos;
-      if (pos % MAX_W == w) {
-        pos = pos - w + MAX_W;
+      if (pos % Params::ROW_STRIDE == w) {
+        pos = pos - w + Params::ROW_STRIDE;
       }
     }
     Coord operator * () const {
@@ -101,21 +131,23 @@ public:
     return iterator(0,w);
   }
   iterator end() const {
-    return iterator(h * MAX_W, w);
+    return iterator(h * Params::ROW_STRIDE, w);
   }
   
   inline bool operator [] (Coord pos) const {
-    return grid[pos + (SENTINELS ? MAX_W : 0)];
+    return grid[pos + (Params::SENTINELS ? Params::ROW_STRIDE : 0)];
   }
   inline bool& operator [] (Coord pos) {
-    return grid[pos + (SENTINELS ? MAX_W : 0)];
+    return grid[pos + (Params::SENTINELS ? Params::ROW_STRIDE : 0)];
   }
   void clear() {
-    std::fill_n(grid + (SENTINELS ? MAX_W : 0), MAX_W*h, false);
+    std::fill_n(grid + (Params::SENTINELS ? Params::ROW_STRIDE : 0), h*Params::ROW_STRIDE, false);
     init_sentinels();
   }
   
   Puzzle(int w, int h) : w(w), h(h) {
+    assert(w > 0 && w <= Params::MAX_W);
+    assert(h > 0 && h <= Params::MAX_H);
     clear();
   }
   Puzzle(std::initializer_list<std::string> const& data) {
@@ -165,20 +197,22 @@ public:
 // Distance calculation / solver
 // ----------------------------------------------------------------------------
 
-using Distance = uint8_t;
-const Distance UNREACHABLE = 254;
-Distance dists[MAX_W*MAX_H];
-Distance pass_dists[MAX_W*MAX_H];
-Coord come_from[MAX_W*MAX_H];
+const Distance UNREACHABLE = std::numeric_limits<Distance>::max() - 1;
+Distance dists[GLOBAL_BUFFER_SIZE];
+Distance pass_dists[GLOBAL_BUFFER_SIZE];
+int come_from[GLOBAL_BUFFER_SIZE];
 
 // Returns maximum distance that can be traveled to reach any point
-int max_distance(Puzzle const& puzzle, const bool track_come_from = false) {
-  Coord queue[MAX_W*MAX_H];
+template <bool track_come_from = false, typename Params>
+int max_distance(Puzzle<Params> const& puzzle) {
+  using Coord = ::Coord<Params>;
+  Coord queue[Params::MAX_W*Params::MAX_H];
   int queue_start = 0, queue_end = 0;
   Distance max_dist = 0;
-  
-  std::fill_n(dists, MAX_W*puzzle.h, UNREACHABLE);
-  std::fill_n(pass_dists, MAX_W*puzzle.h, UNREACHABLE);
+
+  static_assert(Params::BUFFER_SIZE <= GLOBAL_BUFFER_SIZE);
+  std::fill_n(dists,      Params::ROW_STRIDE*puzzle.h, UNREACHABLE);
+  std::fill_n(pass_dists, Params::ROW_STRIDE*puzzle.h, UNREACHABLE);
   
   queue[queue_end++] = puzzle.start;
   dists[puzzle.start] = pass_dists[puzzle.start] = 0;
@@ -188,24 +222,17 @@ int max_distance(Puzzle const& puzzle, const bool track_come_from = false) {
     const Distance dist = dists[pos];
     const Distance next_dist = dist + 1;
     // check move in all four directions
-    auto check_in_direction = [&](int delta
-      #if !SENTINELS || DROP_OFF_EDGES
-        , int bound
-      #endif
-    ) {
+    auto check_in_direction = [&](int delta, int bound) {
       Coord p = pos;
       while (true) {
         // is next point free?
         Coord p2 = p + delta;
-        #if DROP_OFF_EDGES
-          if (p2 == bound) {
-            // can't stop at the edge
-            return;
-          }
-        #elif !SENTINELS
-          // with sentinels we don't need bounds checking anymore
-          if (p2 == bound) break;
-        #endif
+        if (!Params::EDGES_ARE_WALLS && p2 == bound) {
+          // can't stop at the edge
+          return;
+        }
+        // with sentinels we don't need bounds checking anymore
+        if (!Params::SENTINELS && p2 == bound) break;
         if (puzzle[p2]) break;
         if (pass_dists[p2] > next_dist) {
           pass_dists[p2] = next_dist;
@@ -219,18 +246,10 @@ int max_distance(Puzzle const& puzzle, const bool track_come_from = false) {
         queue[queue_end++] = p;
       }
     };
-    #if SENTINELS && !DROP_OFF_EDGES
-      check_in_direction(-1);
-      check_in_direction(1);
-      check_in_direction(-MAX_W);
-      check_in_direction(MAX_W);
-    #else
-      const int col = pos.col(), row = pos.row()*MAX_W;
-      check_in_direction(-1, row-1);
-      check_in_direction(+1, row+puzzle.w);
-      check_in_direction(-MAX_W, (-1)*MAX_W + col);
-      check_in_direction(+MAX_W, puzzle.h*MAX_W + col);
-    #endif
+    check_in_direction(-1, pos.with_col(-1));
+    check_in_direction(+1, pos.with_col(puzzle.w));
+    check_in_direction(-Params::ROW_STRIDE, pos.with_row(-1));
+    check_in_direction(+Params::ROW_STRIDE, pos.with_row(puzzle.h));
   }
   return max_dist;
 }
@@ -245,24 +264,27 @@ enum class Style {
   BOX_DRAWING
 };
 
-Coord find_goal(Puzzle const& puzzle, int distance) {
+template <typename Params>
+Coord<Params> find_goal(Puzzle<Params> const& puzzle, int distance) {
   // requires that max_distance() has been called to fill pass_dists
-  for (Coord pos : puzzle) {
+  for (auto pos : puzzle) {
     if (pass_dists[pos] == distance) return pos;
   }
   return puzzle.start;
 }
 
-void show_path(Puzzle const& puzzle, Coord goal, const char** path) {
+template <typename Params>
+void show_path(Puzzle<Params> const& puzzle, Coord<Params> goal, const char** path) {
+  using Coord = ::Coord<Params>;
   const char* clear = ".";
-  std::fill_n(path, MAX_W*MAX_H, clear);
+  std::fill_n(path, Params::BUFFER_SIZE, clear);
   path[goal] = "E";
-  Coord pos = goal;
+  auto pos = goal;
   while (pos != puzzle.start) {
     Coord from = come_from[pos];
     if (from == pos) return; // shouldn't happen
     bool horizontal = from.row() == pos.row();
-    int dir = horizontal ? (from < pos ? -1 : 1) : (from < pos ? -MAX_W : MAX_W);
+    int dir = horizontal ? (from < pos ? -1 : 1) : (from < pos ? -Params::ROW_STRIDE : Params::ROW_STRIDE);
     while (pos != from) {
       pos = pos + dir;
       if (path[pos] != clear) {
@@ -272,27 +294,28 @@ void show_path(Puzzle const& puzzle, Coord goal, const char** path) {
       }
     }
     Coord next_from = come_from[from];
-    if (dir == -1)     path[pos] = next_from < pos ? "└" : "┌";
-    if (dir ==  1)     path[pos] = next_from < pos ? "┘" : "┐";
-    if (dir == -MAX_W) path[pos] = next_from < pos ? "┐" : "┌";
-    if (dir ==  MAX_W) path[pos] = next_from < pos ? "┘" : "└";
+    if (dir == -1)                  path[pos] = next_from < pos ? "└" : "┌";
+    if (dir ==  1)                  path[pos] = next_from < pos ? "┘" : "┐";
+    if (dir == -Params::ROW_STRIDE) path[pos] = next_from < pos ? "┐" : "┌";
+    if (dir ==  Params::ROW_STRIDE) path[pos] = next_from < pos ? "┘" : "└";
   }
 }
 
-void show(Puzzle const& puzzle, Style style = Style::BOX_DRAWING, bool ansi_color = true) {
+template <typename Params>
+void show(Puzzle<Params> const& puzzle, Style style = Style::BOX_DRAWING, bool ansi_color = true) {
   std::ostream& out = std::cout;
   const char* CLEAR = ansi_color ? "\033[0m" : "";
   const char* GREEN = ansi_color ? "\033[32;1m" : "";
   const char* BLUE = ansi_color ? "\033[34;1m" : "";
   const char* YELLOW = ansi_color ? "\033[33;1m" : "";
-  int max_dist = max_distance(puzzle, true);
-  Coord goal = find_goal(puzzle, max_dist);
-  const char* box_drawing[MAX_W*MAX_H];
+  int max_dist = max_distance<true>(puzzle);
+  auto goal = find_goal(puzzle, max_dist);
+  const char* box_drawing[Params::BUFFER_SIZE];
   show_path(puzzle, goal, box_drawing);
   out << puzzle.w << "×" << puzzle.h << " puzzle, " << puzzle.count_obstacles() << " obstacles, " << max_dist << " moves" << std::endl;
   for (int y=0; y<puzzle.h; ++y) {
     for (int x=0; x<puzzle.w; ++x) {
-      Coord pos = Coord(x,y);
+      auto pos = Coord<Params>(x,y);
       int dist = pass_dists[pos];
       if (puzzle[pos]) {
         out << YELLOW << (style == Style::BOX_DRAWING ? "■" : "#") << CLEAR;
@@ -322,20 +345,21 @@ void show(Puzzle const& puzzle, Style style = Style::BOX_DRAWING, bool ansi_colo
 // Greedy puzzle maker
 // ----------------------------------------------------------------------------
 
-template <typename F>
-void for_single_changes(Puzzle const& puzzle, bool swaps, bool reachable_only, F fun) {
+template <typename Params, typename F>
+void for_single_changes(Puzzle<Params> const& puzzle, bool swaps, bool reachable_only, F fun) {
+  using Coord = ::Coord<Params>;
   // find out which cells are reachable
-  int reachable[MAX_W*MAX_H];
+  int reachable[Params::BUFFER_SIZE];
   if (reachable_only) {
     max_distance(puzzle);
-    std::copy(pass_dists, pass_dists+MAX_W*MAX_H, reachable);
+    std::copy(pass_dists, pass_dists+Params::ROW_STRIDE*puzzle.h, reachable);
   }
   // for each obstacle, consider moving it to any location, and call fun
-  Puzzle puzzle_new = puzzle;
-  for (Coord obstacle : puzzle) {
+  auto puzzle_new = puzzle;
+  for (auto obstacle : puzzle) {
     if (puzzle[obstacle]) {
       puzzle_new[obstacle] = false;
-      for (Coord alt : puzzle) {
+      for (auto alt : puzzle) {
         if (reachable_only && reachable[alt] == UNREACHABLE) {
           // optimization: no path reaches this cell, so placing an obstacle here is useless
           continue;
@@ -351,7 +375,7 @@ void for_single_changes(Puzzle const& puzzle, bool swaps, bool reachable_only, F
   }
   // consider new start location
   {
-    for (Coord alt : puzzle) {
+    for (auto alt : puzzle) {
       if (!puzzle[alt] && alt != puzzle.start) {
         puzzle_new.start = alt;
         fun(puzzle_new);
@@ -391,8 +415,9 @@ void for_single_changes(Puzzle const& puzzle, bool swaps, bool reachable_only, F
   }
 }
 
-Puzzle greedy_optimize(Puzzle const& initial, bool verbose = false) {
-  Puzzle best = initial;
+template <typename Params>
+Puzzle<Params> greedy_optimize(Puzzle<Params> const& initial, bool verbose = false) {
+  auto best = initial;
   int best_score = max_distance(best);
   const bool accept_same_score = false;
   const int BUDGET = accept_same_score ? 10 : 1;
@@ -402,10 +427,10 @@ Puzzle greedy_optimize(Puzzle const& initial, bool verbose = false) {
   
   while (budget > 0) {
     budget--;
-    Puzzle cur = best;
+    auto cur = best;
     int num_equiv = 1; // number of puzzles with the same score as best
     bool swaps = USE_SWAPS && (budget == BUDGET || budget == 0);
-    for_single_changes(cur, swaps, REACHABLE_ONLY, [&](Puzzle const& p) {
+    for_single_changes(cur, swaps, REACHABLE_ONLY, [&](Puzzle<Params> const& p) {
       int score = max_distance(p);
       if (score > best_score) {
         best = p;
@@ -427,14 +452,15 @@ Puzzle greedy_optimize(Puzzle const& initial, bool verbose = false) {
   return best;
 }
 
-Puzzle greedy_optimize_from_random(int w, int h, int obstacles = 8, const bool verbose = false) {
+template <typename Params>
+Puzzle<Params> greedy_optimize_from_random(int w, int h, int obstacles = 8, const bool verbose = false) {
   const int RUNS = 10000;
-  Puzzle best(w,h);
+  Puzzle<Params> best(w,h);
   int best_score = 0;
   
   for (int i=0; i < RUNS; ++i) {
     // initialize
-    Puzzle puzzle(w,h);
+    Puzzle<Params> puzzle(w,h);
     for (int j=0; j < obstacles; ++j) {
       puzzle[puzzle.random_coord()] = true;
     }
@@ -456,8 +482,9 @@ Puzzle greedy_optimize_from_random(int w, int h, int obstacles = 8, const bool v
 // ----------------------------------------------------------------------------
 
 // Find and remove the i-th obstacle
-void remove_obstacle(Puzzle& puzzle, int i) {
-  for (Coord pos : puzzle) {
+template <typename Params>
+void remove_obstacle(Puzzle<Params>& puzzle, int i) {
+  for (auto pos : puzzle) {
     if (puzzle[pos]) {
       if (i == 0) {
         puzzle[pos] = false;
@@ -468,7 +495,8 @@ void remove_obstacle(Puzzle& puzzle, int i) {
   }
 }
 
-void random_change(Puzzle& puzzle, int num_obstacles) {
+template <typename Params>
+void random_change(Puzzle<Params>& puzzle, int num_obstacles) {
   // move an obstacle or a the start location
   int to_remove = random_range(num_obstacles+1);
   if (to_remove == num_obstacles) {
@@ -479,8 +507,9 @@ void random_change(Puzzle& puzzle, int num_obstacles) {
   }
 }
 
-Puzzle make_random_puzzle(int w, int h, int obstacles) {
-  Puzzle puzzle(w,h);
+template <typename Params>
+Puzzle<Params> make_random_puzzle(int w, int h, int obstacles) {
+  Puzzle<Params> puzzle(w,h);
   puzzle.start = puzzle.random_coord();
   for (int i = 0; i < obstacles; ++i) {
     puzzle[puzzle.random_empty_coord()] = true;
@@ -488,8 +517,9 @@ Puzzle make_random_puzzle(int w, int h, int obstacles) {
   return puzzle;
 }
 
-Puzzle simulated_annealing_search(int w, int h, int obstacles, int verbose=0) {
-  Puzzle best(w,h);
+template <typename Params>
+Puzzle<Params> simulated_annealing_search(int w, int h, int obstacles, int verbose=0) {
+  Puzzle<Params> best(w,h);
   int best_score = 0;
 
   const int RUNS = 10;
@@ -499,13 +529,13 @@ Puzzle simulated_annealing_search(int w, int h, int obstacles, int verbose=0) {
   const double TEMPERATURE_STEP = 1 / 1.003;
   
   for (int i=0; i < RUNS; ++i) {
-    Puzzle puzzle = make_random_puzzle(w,h,obstacles);
+    auto puzzle = make_random_puzzle<Params>(w,h,obstacles);
     int score = max_distance(puzzle);
     for (double temp = TEMPERATURE_INITIAL; temp >= TEMPERATURE_FINAL; temp *= TEMPERATURE_STEP) {
       int n_accept = 0, n_reject = 0;
       for (int i=0; i < STEP_PER_TEMPERATURE; ++i) {
         // change
-        Puzzle prev_puzzle = puzzle;
+        auto prev_puzzle = puzzle;
         int prev_score = score;
         random_change(puzzle, obstacles);
         // compare with best
@@ -537,10 +567,12 @@ Puzzle simulated_annealing_search(int w, int h, int obstacles, int verbose=0) {
 // Exhaustive search
 // ----------------------------------------------------------------------------
 
+template <typename Params>
 struct SkipStartIterator {
-  Puzzle::iterator it;
+  using base_iterator = typename Puzzle<Params>::iterator;
+  base_iterator it;
   int start;
-  explicit SkipStartIterator(Puzzle const& p)
+  explicit SkipStartIterator(Puzzle<Params> const& p)
     : it(p.begin()), start(p.start)
   {
     if (*it == start) ++it;
@@ -549,23 +581,24 @@ struct SkipStartIterator {
     ++it;
     if (*it == start) ++it;
   }
-  Coord operator * () const {
+  Coord<Params> operator * () const {
     return *it;
   }
-  bool operator == (Puzzle::iterator const& that) const {
+  bool operator == (base_iterator const& that) const {
     return it == that;
   }
-  bool operator != (Puzzle::iterator const& that) const {
+  bool operator != (base_iterator const& that) const {
     return it != that;
   }
 };
 
 // move obstacles to next configuration
 // in (reversed) lexicographical order
-bool next_puzzle(Puzzle& p) {
+template <typename Params>
+bool next_puzzle(Puzzle<Params>& p) {
   // change "0001110" to "1100001"
   // find obstacle
-  auto obstacle = SkipStartIterator(p);
+  auto obstacle = SkipStartIterator<Params>(p);
   while (true) {
     if (obstacle == p.end()) return false; // no obstacles
     if (p[*obstacle]) break;
@@ -581,7 +614,7 @@ bool next_puzzle(Puzzle& p) {
     ++num_obstacles;
   }
   // move over
-  auto it = SkipStartIterator(p);
+  auto it = SkipStartIterator<Params>(p);
   for (int i=0; i<num_obstacles-1; ++i) {
     p[*obstacle] = false;
     p[*it] = true;
@@ -594,9 +627,10 @@ bool next_puzzle(Puzzle& p) {
 }
 
 // first puzzle configuration
-void first_puzzle(Puzzle& p, int obstacles) {
+template <typename Params>
+void first_puzzle(Puzzle<Params>& p, int obstacles) {
   p.clear();
-  auto it = SkipStartIterator(p);
+  auto it = SkipStartIterator<Params>(p);
   while (obstacles > 0 && it != p.end()) {
     p[*it] = true;
     --obstacles;
@@ -604,12 +638,13 @@ void first_puzzle(Puzzle& p, int obstacles) {
   }
 }
 
-Puzzle brute_force_search(int w, int h, int obstacles = 8, const bool verbose = false) {
-  Puzzle best(w,h);
+template <typename Params>
+Puzzle<Params> brute_force_search(int w, int h, int obstacles = 8, const bool verbose = false) {
+  Puzzle<Params> best(w,h);
   int best_score = -1;
   
-  Puzzle puzzle(w,h);
-  for (Coord start_coord : puzzle) {
+  Puzzle<Params> puzzle(w,h);
+  for (auto start_coord : puzzle) {
     // By mirror symmetry, we only need to consider start coordinates in top-left quadrant
     // If w==h, by transposition we only need the upper diagonal
     if (start_coord.col()*2 > w || start_coord.row()*2 > h || (w == h && start_coord.row() > start_coord.col())) {
@@ -642,14 +677,13 @@ enum class RelativePosition {
   SKIP,
 };
 
-const int MAX_OBSTACLES = MAX_W*MAX_H;
-
 // A puzzle where obstacles are placed relative to each other
 // Obstacles and start location are placed from left to right
 // vertical positions are placed top to bottom, and we use a permutation to pick a vertical location
 //
 // We have num_objects-1 obstacles and 1 start location.
 // There are num_objects+1 horizontal and vertical relative positions (between walls and objects)
+template <int MAX_OBSTACLES = 64>
 struct RelativePuzzle {
   int num_objects;
   RelativePosition horizontal_pos[MAX_OBSTACLES];
@@ -670,7 +704,7 @@ struct RelativePuzzle {
   //   * for uniqueness: start_index <= n/2
   //       otherwise we could horizontal flip
   
-  static void to_coords(const RelativePosition* rel_pos, int n, Coord* coords, int& w) {
+  static void to_coords(const RelativePosition* rel_pos, int n, int* coords, int& w) {
     int x = -1;
     for (int i=0; i<n+1; ++i) {
       if      (rel_pos[i] == RelativePosition::SAME) x += 0;
@@ -681,16 +715,17 @@ struct RelativePuzzle {
     w = coords[n];
   }
   
-  bool to_puzzle(Puzzle& puzzle) const {
-    Coord x_coords[MAX_OBSTACLES];
-    Coord y_coords[MAX_OBSTACLES];
+  template <typename Params>
+  bool to_puzzle(Puzzle<Params>& puzzle) const {
+    int x_coords[MAX_OBSTACLES];
+    int y_coords[MAX_OBSTACLES];
     to_coords(horizontal_pos, num_objects, x_coords, puzzle.w);
     to_coords(vertical_pos, num_objects, y_coords, puzzle.h);
-    if (puzzle.w == 0 || puzzle.w > MAX_W || x_coords[0] == -1) return false;
-    if (puzzle.h == 0 || puzzle.h > MAX_H || y_coords[0] == -1) return false;
+    if (puzzle.w == 0 || puzzle.w > Params::MAX_W-1 || x_coords[0] == -1) return false;
+    if (puzzle.h == 0 || puzzle.h > Params::MAX_H   || y_coords[0] == -1) return false;
     puzzle.clear();
     for (int i=0; i<num_objects; ++i) {
-      auto pos = Coord(x_coords[i], y_coords[permutation[i]]);
+      auto pos = Coord<Params>(x_coords[i], y_coords[permutation[i]]);
       if (i == start_index) {
         puzzle.start = pos;
       } else {
@@ -701,12 +736,12 @@ struct RelativePuzzle {
   }
 };
 
-RelativePuzzle first_relative_puzzle(int obstacles) {
-  RelativePuzzle p;
+RelativePuzzle<> first_relative_puzzle(int obstacles, bool allow_same) {
+  RelativePuzzle<> p;
   p.num_objects = obstacles + 1;
   p.start_index = 0;
   for (int i = 0; i < p.num_objects+1; ++i) {
-    auto pos = i == 0 || i == p.num_objects ? RelativePosition::NEXT : RelativePosition::SAME;
+    auto pos = i == 0 || i == p.num_objects || !allow_same ? RelativePosition::NEXT : RelativePosition::SAME;
     p.horizontal_pos[i] = pos;
     p.vertical_pos[i] = pos;
   }
@@ -728,7 +763,8 @@ bool next_relative_pos(RelativePosition& p, bool at_wall) {
     return false;
   }
 }
-bool next_relative_puzzle(RelativePuzzle& p) {
+template <int O>
+bool next_relative_puzzle(RelativePuzzle<O>& p, bool allow_same) {
   // next start location
   ++p.start_index;
   if (p.start_index*2 < p.num_objects) return true;
@@ -742,8 +778,8 @@ bool next_relative_puzzle(RelativePuzzle& p) {
   }
   // next vertical/horizontal pos
   for (int i = 0; i < p.num_objects+1; ++i) {
-    if (next_relative_pos(p.horizontal_pos[i], i == 0 || i == p.num_objects)) return true;
-    if (next_relative_pos(p.vertical_pos[i], i == 0 || i == p.num_objects)) return true;
+    if (next_relative_pos(p.horizontal_pos[i], i == 0 || i == p.num_objects || !allow_same)) return true;
+    if (next_relative_pos(p.vertical_pos[i], i == 0 || i == p.num_objects || !allow_same)) return true;
   }
   return false;
 }
@@ -751,7 +787,8 @@ bool next_relative_puzzle(RelativePuzzle& p) {
 std::ostream& operator << (std::ostream& out, RelativePosition pos) {
   return out << (pos == RelativePosition::SAME ? '0' : pos == RelativePosition::NEXT ? '1' : '2');
 }
-std::ostream& operator << (std::ostream& out, RelativePuzzle const& rp) {
+template <int O>
+std::ostream& operator << (std::ostream& out, RelativePuzzle<O> const& rp) {
   out << "RP: " << rp.num_objects << " start " << rp.start_index << std::endl;
   out << "horz: "; for (int i=0; i<rp.num_objects+1; ++i) {out << rp.horizontal_pos[i];} out << std::endl;
   out << "vert: "; for (int i=0; i<rp.num_objects+1; ++i) {out << rp.vertical_pos[i];} out << std::endl;
@@ -759,12 +796,13 @@ std::ostream& operator << (std::ostream& out, RelativePuzzle const& rp) {
   return out;
 }
 
-Puzzle relative_puzzle_search(int obstacles = 8, const int verbose = 2) {
-  Puzzle best(1,1);
+template <typename Params>
+Puzzle<Params> relative_puzzle_search(int obstacles = 8, bool allow_same = false, const int verbose = 2) {
+  Puzzle<Params> best(1,1);
   int best_score = -1;
   
-  RelativePuzzle rp = first_relative_puzzle(obstacles);
-  Puzzle puzzle(1,1);
+  RelativePuzzle<> rp = first_relative_puzzle(obstacles,allow_same);
+  Puzzle<Params> puzzle(1,1);
   long long count = 0;
   while (true) {
     count++;
@@ -782,24 +820,18 @@ Puzzle relative_puzzle_search(int obstacles = 8, const int verbose = 2) {
         if (verbose >= 2) std::cout << rp;
       }
     }
-    if (!next_relative_puzzle(rp)) break;
+    if (!next_relative_puzzle(rp,allow_same)) break;
   }
   if (verbose) std::cout << count << " puzzles tried" << std::endl;
   return best;
 }
 
 // ----------------------------------------------------------------------------
-// Image output
-// ----------------------------------------------------------------------------
-
-void to_image() {
-}
-
-// ----------------------------------------------------------------------------
 // Main
 // ----------------------------------------------------------------------------
 
-Puzzle test_puzzle({
+using SimpleParams = Params<16, 16>;
+Puzzle<SimpleParams> test_puzzle({
     ".0#....",
     ".#..#..",
     ".#.....",
@@ -808,7 +840,7 @@ Puzzle test_puzzle({
     ".......",
   });
 
-Puzzle test_puzzle2({
+Puzzle<SimpleParams> test_puzzle2({
     "0...#...",
     "#.......",
     ".......#",
@@ -818,30 +850,36 @@ Puzzle test_puzzle2({
   });
 
 int main() {
+  const bool edges_are_walls = true;
   const int w = 7, h = 6;
   //const int w = 8, h = 8;
+  //const int w = 10, h = 10;
   //const int w = 16, h = 16;
-  const int min_obstacle = 2, max_obstacle = 8;
-  const bool brute_force = false;
+  //const int w = 30, h = 30;
+  //const int w = 30, h = 10;
+  const int min_obstacle = 2, max_obstacle = 5;
+  //const int min_obstacle = 9, max_obstacle = 11;
+  //const int min_obstacle = 7, max_obstacle = 20;
+  const bool brute_force = true;
   const bool simulated_annealing = false;
-  const bool verbose = true;
+  const bool verbose = false;
+  using Params = ::Params<w+1,h,edges_are_walls>;
+  //using Params = ::Params<64,64,edges_are_walls>;
   
   if (false) {
-    relative_puzzle_search(6);
+    relative_puzzle_search<Params>(min_obstacle);
     return EXIT_SUCCESS;
   }
   
   for (int o = min_obstacle; o <= max_obstacle; ++o) {
     std::cout << "=============" << std::endl;
-    Puzzle p =
+    auto puzzle =
       brute_force ?
-        brute_force_search(w,h,o,verbose) :
+        brute_force_search<Params>(w,h,o,verbose) :
       simulated_annealing ?
-        simulated_annealing_search(w,h,o,verbose) :
-        greedy_optimize_from_random(w,h,o,verbose);
-    int score = max_distance(p);
-    show(p);
-    std::cout << "With " << o << " obstacles: " << score << " steps" << std::endl;
+        simulated_annealing_search<Params>(w,h,o,verbose) :
+        greedy_optimize_from_random<Params>(w,h,o,verbose);
+    show(puzzle);
   }
   
   return EXIT_SUCCESS;
